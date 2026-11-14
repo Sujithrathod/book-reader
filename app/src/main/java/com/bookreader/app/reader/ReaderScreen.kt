@@ -20,6 +20,29 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.graphics.Color
+import com.bookreader.app.data.BookmarkEntity
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.bookreader.app.narration.VoiceInfo
+import java.util.Locale
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsTopHeight
@@ -122,6 +145,8 @@ fun ReaderScreen(
     onSettingsChange: (ReaderSettings) -> Unit,
     onSavePosition: (location: String, progress: Double) -> Unit,
     onStartNarration: (NarrationSource) -> Unit,
+    /** Gives the activity what the volume buttons should do (+1 next, -1 previous), or null for their normal job. */
+    onVolumeKeys: (((Int) -> Unit)?) -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -129,13 +154,15 @@ fun ReaderScreen(
     val settings by settingsFlow.collectAsState(initial = session.initialSettings)
     val narration by narrator.state.collectAsState()
     val colors = settings.theme.colors()
-    val dark = settings.theme == ReadingTheme.DARK
+    val dark = settings.theme.dark
     val isPdf = session.format == BookFormat.PDF
     var controls by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<String?>(null) }
     var options by remember { mutableStateOf(false) }
     var autoScroll by remember { mutableStateOf(false) }
-    var themeMenu by remember { mutableStateOf(false) }
+    var autoPaused by remember { mutableStateOf(false) }
+    val bookmarkDao = remember { context.app.database.bookmarks() }
+    val bookmarks by remember(session) { bookmarkDao.observe(session.book.id) }.collectAsState(initial = emptyList())
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val host = remember(session) { ReaderHost(save = onSavePosition, startNarration = onStartNarration) }
@@ -157,6 +184,7 @@ fun ReaderScreen(
         if (narration.bookId == session.book.id) narration.message?.let { snackbar.showSnackbar(it) }
     }
 
+    host.notify = { message -> scope.launch { snackbar.showSnackbar(message) } }
     host.onTap = { zone ->
         when {
             autoScroll -> autoScroll = false
@@ -176,16 +204,17 @@ fun ReaderScreen(
             bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             if (controls || options) bars.show(WindowInsetsCompat.Type.navigationBars())
             else bars.hide(WindowInsetsCompat.Type.navigationBars())
-            bars.isAppearanceLightStatusBars = !dark && !controls && !options
+            bars.isAppearanceLightStatusBars = !dark
             bars.isAppearanceLightNavigationBars = !dark
         }
         onDispose { }
     }
 
     val speed by rememberUpdatedState(settings.autoScrollSpeed)
-    LaunchedEffect(autoScroll, host.nav) {
+    LaunchedEffect(autoScroll) { if (!autoScroll) autoPaused = false }
+    LaunchedEffect(autoScroll, autoPaused, host.nav) {
         val nav = host.nav
-        if (!autoScroll || nav == null) return@LaunchedEffect
+        if (!autoScroll || autoPaused || nav == null) return@LaunchedEffect
         try {
             nav.autoScroll { speed }
         } catch (e: CancellationException) {
@@ -204,6 +233,30 @@ fun ReaderScreen(
 
     fun open(panel: String) { controls = false; sheet = panel }
 
+    // Volume buttons turn pages when that setting is on, except while this book is read aloud.
+    val volumeTurns = settings.volumeKeysTurn && !mine && !options && sheet == null
+    DisposableEffect(volumeTurns) {
+        onVolumeKeys(if (volumeTurns) { d -> host.nav?.turn(d) } else null)
+        onDispose { onVolumeKeys(null) }
+    }
+
+    val here = host.position
+    val bookmarked = bookmarks.any { it.page == here.page }
+    fun toggleBookmark() {
+        scope.launch {
+            if (bookmarked) {
+                bookmarkDao.deleteAt(session.book.id, here.page)
+                snackbar.showSnackbar("Bookmark removed")
+            } else {
+                bookmarkDao.insert(BookmarkEntity(bookId = session.book.id, page = here.page, label = here.label, chapter = here.chapter, createdAt = System.currentTimeMillis()))
+                snackbar.showSnackbar("Bookmark added")
+            }
+        }
+    }
+    val voices by narrator.voices.collectAsState()
+    val voiceLabel = VoiceChoice.effective(voices, settings.voice.voiceName, narrator.bookLanguage, Locale.getDefault())
+        ?.let { VoiceChoice.title(it, voices) } ?: "Choose a voice"
+
     // Back closes the menu or stops auto scroll before it leaves the book.
     BackHandler(enabled = controls || autoScroll) { controls = false; autoScroll = false }
 
@@ -220,12 +273,17 @@ fun ReaderScreen(
                 }
                 if (settings.statusLine) StatusLine(host.position, colors.text.copy(alpha = 0.6f))
             }
+            // Warm light: an orange tint over the page that cuts blue light. It doesn't take touches.
+            if (settings.warmth > 0f) Box(Modifier.fillMaxSize().background(Color(0xFFFF8A00).copy(alpha = settings.warmth * 0.3f)))
 
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 when {
                     autoScroll -> AutoScrollBar(
                         speed = settings.autoScrollSpeed,
+                        paused = autoPaused,
+                        progress = host.autoTurn,
                         onSpeed = { onSettingsChange(settings.copy(autoScrollSpeed = it.coerceIn(ReaderSettings.AUTO_SCROLL_RANGE))) },
+                        onPause = { autoPaused = !autoPaused },
                         onStop = { autoScroll = false },
                     )
                     mine -> TtsBar(
@@ -252,39 +310,17 @@ fun ReaderScreen(
                             )
                         }
                         val nav = host.nav
-                        if (pageView && settings.thumbnails && nav != null) ThumbnailStrip(host.position, nav)
-                        PageSliderRow(host.position, nav)
-                        ReaderToolbar(
+                        ReaderBottomPanel(
+                            position = host.position,
+                            nav = nav,
                             speaking = shown.playState == PlayState.PLAYING,
-                            onRotate = {
-                                val next = ScreenOrientation.entries[(settings.orientation.ordinal + 1) % ScreenOrientation.entries.size]
-                                onSettingsChange(settings.copy(orientation = next))
-                                scope.launch { snackbar.showSnackbar("Screen: ${next.label}") }
-                            },
-                            dayNightMenu = { open, dismiss ->
-                                DayNightMenu(
-                                    expanded = open,
-                                    onDismiss = dismiss,
-                                    title = "Day/Night Mode",
-                                    items = listOf(
-                                        "Day Theme" to { onSettingsChange(settings.copy(theme = ReadingTheme.LIGHT)) },
-                                        "Night Theme" to { onSettingsChange(settings.copy(theme = ReadingTheme.DARK)) },
-                                        "Load from theme" to { themeMenu = true },
-                                    ),
-                                )
-                                DayNightMenu(
-                                    expanded = themeMenu,
-                                    onDismiss = { themeMenu = false },
-                                    title = "Themes",
-                                    items = ReadingTheme.entries.map { t ->
-                                        (if (t == settings.theme) "✓  ${t.label}" else "     ${t.label}") to { onSettingsChange(settings.copy(theme = t)) }
-                                    },
-                                )
-                            },
+                            theme = settings.theme,
+                            onTheme = { onSettingsChange(settings.copy(theme = it)) },
+                            onContents = { open("toc") },
                             onSpeak = { play() },
                             onAutoScroll = { controls = false; autoScroll = true },
-                            onContents = { open("toc") },
-                            onMore = { open("look") },
+                            onSettings = { controls = false; options = true },
+                            top = { if (pageView && settings.thumbnails && nav != null) ThumbnailStrip(host.position, nav) },
                         )
                     }
                 }
@@ -300,11 +336,12 @@ fun ReaderScreen(
                     title = session.book.title,
                     showReflow = isPdf && settings.reflowButton,
                     reflowOn = session.pdfReflow,
+                    bookmarked = bookmarked,
+                    onBookmark = { toggleBookmark() },
                     onBack = onBack,
                     onReflow = { session.pdfReflow = !session.pdfReflow },
                 ) { dismiss ->
-                    MenuEntry(if (isPdf) "PDF options" else "Reading options") { dismiss(); controls = false; options = true }
-                    MenuEntry("Reading settings") { dismiss(); open("look") }
+                    MenuEntry("Settings") { dismiss(); controls = false; options = true }
                     MenuEntry("Voice and speed") { dismiss(); open("voices") }
                     MenuEntry("Sleep timer") { dismiss(); open("timer") }
                     if (isPdf && !settings.reflowButton) {
@@ -313,17 +350,33 @@ fun ReaderScreen(
                 }
             }
 
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = if (controls) 200.dp else 72.dp))
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = if (controls) 230.dp else 72.dp))
 
-            if (options) ReaderOptionsScreen(isPdf, settings, onSettingsChange) { options = false }
+            if (options) {
+                ReaderSettingsScreen(
+                    format = session.format,
+                    s = settings,
+                    onChange = onSettingsChange,
+                    voiceLabel = voiceLabel,
+                    timerLabel = shown.sleepRemainingMs?.let { "${(it / 60_000) + 1} min left" } ?: "Off",
+                    onVoices = { sheet = "voices" },
+                    onTimer = { sheet = "timer" },
+                    onClose = { options = false },
+                )
+            }
         }
 
         if (sheet != null) {
-            ModalBottomSheet(onDismissRequest = { sheet = null }) {
+            ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Chrome.panel) {
                 when (sheet) {
-                    "toc" -> TocList(host.toc) { entry -> sheet = null; entry.onSelect() }
-                    "look" -> SettingsPanel(settings, session.format, onSettingsChange) { sheet = null; options = true }
-                    "voices" -> VoicePanel(narrator, settings, onSettingsChange)
+                    "toc" -> ContentsSheet(
+                        entries = host.toc,
+                        bookmarks = bookmarks,
+                        onSelect = { entry -> sheet = null; entry.onSelect() },
+                        onBookmark = { b -> sheet = null; host.nav?.goToPage(b.page) },
+                        onDelete = { b -> scope.launch { bookmarkDao.delete(b.id) } },
+                    )
+                    "voices" -> VoicePanel(narrator, settings, null, onSettingsChange, host.notify)
                     "timer" -> TimerPanel(shown.sleepRemainingMs) { minutes -> narrator.setSleepTimer(minutes); sheet = null }
                 }
             }
@@ -353,93 +406,146 @@ private fun TimerPanel(remainingMs: Long?, onPick: (Int?) -> Unit) {
 
 // ---------- Voice picker ----------
 
+/**
+ * Speed, pitch and the voice list. Voices that aren't on the phone yet have a Download
+ * button; the voice engine fetches them and the voice is chosen once it's ready.
+ */
 @Composable
-private fun VoicePanel(narrator: Narrator, settings: ReaderSettings, onChange: (ReaderSettings) -> Unit) {
+private fun VoicePanel(
+    narrator: Narrator,
+    settings: ReaderSettings,
+    bookLanguage: String?,
+    onChange: (ReaderSettings) -> Unit,
+    notify: (String) -> Unit,
+) {
     val context = LocalContext.current
     val engine by narrator.engine.collectAsState()
     val voices by narrator.voices.collectAsState()
+    val downloading by narrator.downloading.collectAsState()
+    val current by rememberUpdatedState(settings)
     val v = settings.voice
-    val selected = narrator.effectiveVoice()?.name
-    fun update(newVoice: VoiceSettings) = onChange(settings.copy(voice = newVoice))
+    val language = narrator.bookLanguage ?: bookLanguage
+    // Worked out from the saved choice itself, so the mark moves as soon as a voice is tapped.
+    val selected = VoiceChoice.effective(voices, v.voiceName, language, Locale.getDefault())?.name
+    var allLanguages by remember { mutableStateOf(false) }
+    fun update(newVoice: VoiceSettings) = onChange(current.copy(voice = newVoice))
+    fun choose(name: String) = update(current.voice.copy(voiceName = name))
+    fun download(name: String) {
+        notify("Downloading the voice…")
+        narrator.downloadVoice(name) { ready ->
+            if (ready) { choose(name); notify("Voice downloaded and selected.") }
+            else notify("The voice couldn't be downloaded. Check the internet connection and try again.")
+        }
+    }
     fun launch(intent: android.content.Intent) {
         try { context.startActivity(intent) } catch (e: ActivityNotFoundException) { /* no settings screen on this phone */ }
     }
 
-    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { Text("Voice and speed", style = MaterialTheme.typography.titleLarge) }
+    // Voices downloaded elsewhere show up when the list opens or the app comes back to the front.
+    LaunchedEffect(engine) { narrator.refreshVoices() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { narrator.refreshVoices() }
 
-        item { Text("Speed: ${"%.1f".format(v.rate)}×", style = MaterialTheme.typography.labelLarge) }
+    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+        item { Text("Voice and speed", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 12.dp)) }
         item {
-            ThinSlider(value = v.rate, onValueChange = { update(v.copy(rate = it)) }, valueRange = VoiceSettings.RATE_RANGE, steps = 19)
-        }
-        item { Text("Pitch: ${"%.1f".format(v.pitch)}", style = MaterialTheme.typography.labelLarge) }
-        item {
-            ThinSlider(value = v.pitch, onValueChange = { update(v.copy(pitch = it)) }, valueRange = VoiceSettings.PITCH_RANGE, steps = 14)
-        }
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Long-press a word to read at once")
-                    Text(
-                        "Off: long-press shows a menu with \"Read from here\" and \"Copy\".",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = settings.longPressReads, onCheckedChange = { onChange(settings.copy(longPressReads = it)) })
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Chrome.card).padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Row { Text("Speed", Modifier.weight(1f)); Text("%.1f×".format(v.rate), color = Chrome.textDim) }
+                ThinSlider(value = v.rate, onValueChange = { update(current.voice.copy(rate = it)) }, valueRange = VoiceSettings.RATE_RANGE, steps = 19)
+                Row { Text("Pitch", Modifier.weight(1f)); Text("%.1f".format(v.pitch), color = Chrome.textDim) }
+                ThinSlider(value = v.pitch, onValueChange = { update(current.voice.copy(pitch = it)) }, valueRange = VoiceSettings.PITCH_RANGE, steps = 14)
             }
         }
-        item { HorizontalDivider() }
+
 
         when (engine) {
-            EngineStatus.NOT_STARTED, EngineStatus.STARTING -> item { Text("Loading the phone's voices…") }
+            EngineStatus.NOT_STARTED, EngineStatus.STARTING -> item { Text("Loading the phone's voices…", modifier = Modifier.padding(vertical = 16.dp)) }
             EngineStatus.UNAVAILABLE -> item {
-                Column {
+                Column(Modifier.padding(vertical = 16.dp)) {
                     Text("No text-to-speech engine is installed on this phone. Install \"Speech Services by Google\" from the Play Store, then come back.")
                     TextButton(onClick = { launch(Narrator.ttsSettingsIntent()) }) { Text("Open text-to-speech settings") }
                 }
             }
             EngineStatus.READY -> {
                 if (voices.isEmpty()) {
-                    item { Text("This phone reports no voices. Download one in the text-to-speech settings.") }
+                    item { Text("This phone reports no voices yet.", modifier = Modifier.padding(vertical = 16.dp)) }
                 }
-                VoiceChoice.grouped(voices).forEach { (language, list) ->
-                    item { Text(language, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp)) }
-                    list.forEach { voice ->
-                        item {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                RadioButton(
+                val (groups, likely) = VoiceChoice.ordered(voices, v.voiceName, language, Locale.getDefault())
+                val shown = if (allLanguages) groups else groups.take(likely.coerceAtLeast(1))
+                shown.forEach { (languageName, list) ->
+                    item(key = "lang:$languageName") {
+                        Text(languageName, color = Chrome.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 8.dp))
+                    }
+                    item(key = "voices:$languageName") {
+                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Chrome.card)) {
+                            list.forEachIndexed { i, voice ->
+                                if (i > 0) HorizontalDivider(color = Chrome.divider, modifier = Modifier.padding(horizontal = 16.dp))
+                                VoiceRow(
+                                    title = "Voice ${i + 1}",
+                                    voice = voice,
                                     selected = voice.name == selected,
-                                    onClick = { update(v.copy(voiceName = voice.name)) },
-                                    enabled = voice.usable,
+                                    downloadStarted = downloading[voice.name],
+                                    onChoose = { if (voice.usable) choose(voice.name) else download(voice.name) },
+                                    onPreview = { narrator.preview(voice.name) },
                                 )
-                                Column(Modifier.weight(1f)) {
-                                    Text(voice.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    val tags = listOfNotNull(
-                                        if (voice.notInstalled) "Not downloaded" else null,
-                                        if (voice.needsInternet) "Needs internet" else "Works offline",
-                                    )
-                                    Text(tags.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                TextButton(onClick = { narrator.preview(voice.name) }, enabled = voice.usable) { Text("Preview") }
                             }
                         }
                     }
                 }
-                item {
-                    Column {
-                        Text(
-                            "Want more voices or languages? Download them in Android's text-to-speech settings. Voices marked \"Works offline\" read without internet.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        Row {
-                            TextButton(onClick = { launch(Narrator.installVoicesIntent()) }) { Text("Get more voices") }
-                            TextButton(onClick = { narrator.refreshVoices() }) { Text("Refresh list") }
+                if (groups.size > shown.size || allLanguages) {
+                    item {
+                        TextButton(onClick = { allLanguages = !allLanguages }, modifier = Modifier.padding(top = 8.dp)) {
+                            Text(if (allLanguages) "Show fewer languages" else "Show all ${groups.size} languages")
                         }
                     }
                 }
+                item {
+                    Text(
+                        "Voices marked \"Offline\" read without internet. If a download doesn't start, the phone's own voice settings can be used instead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp, start = 4.dp),
+                    )
+                    TextButton(onClick = { launch(Narrator.installVoicesIntent()) }) { Text("Open the phone's voice settings") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceRow(
+    title: String,
+    voice: VoiceInfo,
+    selected: Boolean,
+    /** When this voice's download started, or null if it isn't downloading. */
+    downloadStarted: Long?,
+    onChoose: () -> Unit,
+    onPreview: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().selectable(selected = selected, enabled = downloadStarted == null, role = Role.RadioButton, onClick = onChoose).padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null, enabled = voice.usable, modifier = Modifier.padding(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+            Text(VoiceChoice.tags(voice).joinToString(" · "), fontSize = 13.sp, color = Chrome.textDim)
+        }
+        when {
+            downloadStarted != null -> {
+                // The phone's voice engine doesn't say how far a download is, so this shows time, not percent.
+                val seconds by produceState(0L, downloadStarted) {
+                    while (true) { value = (System.currentTimeMillis() - downloadStarted) / 1000; delay(1000) }
+                }
+                Column(horizontalAlignment = Alignment.End, modifier = Modifier.width(128.dp)) {
+                    Text("Downloading  %d:%02d".format(seconds / 60, seconds % 60), fontSize = 13.sp, color = Chrome.textDim)
+                    LinearProgressIndicator(Modifier.padding(top = 6.dp).fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)), color = Chrome.accent, trackColor = Chrome.button)
+                }
+            }
+            voice.usable -> IconButton(onClick = onPreview) { Icon(Icons.Rounded.PlayArrow, "Play a sample of $title", tint = Chrome.accent) }
+            else -> FilledTonalButton(onClick = onChoose) {
+                Icon(Icons.Rounded.Download, null, modifier = Modifier.size(18.dp))
+                Text("Download", modifier = Modifier.padding(start = 6.dp))
             }
         }
     }
@@ -466,7 +572,7 @@ private fun EpubReader(session: ReaderSession, settings: ReaderSettings, narrati
         navigator?.submitPreferences(settings.toEpubPreferences())
     }
     // Night pictures are swapped per chapter, so redo it whenever another chapter comes on screen.
-    val nightImages = settings.theme == ReadingTheme.DARK && settings.darkImages == DarkPictures.INVERT
+    val nightImages = settings.theme.dark && settings.darkImages == DarkPictures.INVERT
     LaunchedEffect(navigator, nightImages) {
         val nav = navigator ?: return@LaunchedEffect
         nav.currentLocator.map { it.href }.distinctUntilChanged().collectLatest {
@@ -495,12 +601,7 @@ private fun EpubReader(session: ReaderSession, settings: ReaderSettings, narrati
         host.nav = ReaderNav(
             goToPage = { i -> positions.getOrNull(i)?.let { nav.go(it, animated = false) } },
             turn = { d -> if (d > 0) nav.goForward(animate) else nav.goBackward(animate) },
-            autoScroll = { speed ->
-                while (true) {
-                    delay((11 - speed()) * 1_000L)
-                    if (!nav.goForward(animated = true)) break
-                }
-            },
+            autoScroll = { speed -> autoTurnPages(host, speed) { nav.goForward(animated = true) } },
         )
         host.hooks = NarrationHooks(
             playFromScreen = {
@@ -566,9 +667,64 @@ private fun flatten(links: List<Link>, depth: Int): List<Pair<Link, Int>> =
 
 // ---------- Sheets ----------
 
+/** The contents sheet: the book's chapters, and the reader's own bookmarks on a second tab. */
+@Composable
+private fun ContentsSheet(
+    entries: List<TocEntry>,
+    bookmarks: List<BookmarkEntity>,
+    onSelect: (TocEntry) -> Unit,
+    onBookmark: (BookmarkEntity) -> Unit,
+    onDelete: (BookmarkEntity) -> Unit,
+) {
+    var tab by remember { mutableStateOf(0) }
+    Row(
+        Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Chrome.button).padding(3.dp),
+    ) {
+        listOf("Contents", if (bookmarks.isEmpty()) "Bookmarks" else "Bookmarks (${bookmarks.size})").forEachIndexed { i, name ->
+            val on = tab == i
+            Box(
+                Modifier.weight(1f).clip(RoundedCornerShape(11.dp)).background(if (on) Chrome.accent else Color.Transparent)
+                    .selectable(selected = on, role = Role.Tab) { tab = i }.padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(name, color = if (on) Chrome.onAccent else Chrome.text, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
+            }
+        }
+    }
+    if (tab == 0) TocList(entries, onSelect) else BookmarkList(bookmarks, onBookmark, onDelete)
+}
+
+@Composable
+private fun BookmarkList(bookmarks: List<BookmarkEntity>, onOpen: (BookmarkEntity) -> Unit, onDelete: (BookmarkEntity) -> Unit) {
+    if (bookmarks.isEmpty()) {
+        Text(
+            "No bookmarks yet. Open the menu and tap the bookmark at the top to mark a page.",
+            modifier = Modifier.padding(24.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    val dates = remember { java.text.SimpleDateFormat("d MMM yyyy", Locale.getDefault()) }
+    LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        itemsIndexed(bookmarks, key = { _, b -> b.id }) { _, b ->
+            Row(Modifier.fillMaxWidth().clickable { onOpen(b) }.padding(start = 24.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Bookmark, null, tint = Chrome.accent, modifier = Modifier.size(22.dp))
+                Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                    val chapter = b.chapter?.takeIf { it.isNotBlank() }
+                    val place = if ('/' in b.label) "Page ${b.label.substringBefore('/')} of ${b.label.substringAfter('/')}" else "At ${b.label}"
+                    val added = dates.format(java.util.Date(b.createdAt))
+                    Text(chapter ?: place, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    Text(if (chapter != null) "$place · $added" else "Added $added", fontSize = 13.sp, color = Chrome.textDim)
+                }
+                IconButton(onClick = { onDelete(b) }) { Icon(Icons.Rounded.Close, "Remove this bookmark", tint = Chrome.textDim) }
+            }
+            HorizontalDivider(color = Chrome.divider, modifier = Modifier.padding(horizontal = 24.dp))
+        }
+    }
+}
+
 @Composable
 private fun TocList(entries: List<TocEntry>, onSelect: (TocEntry) -> Unit) {
-    Text("Contents", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
     if (entries.isEmpty()) {
         Text(
             "This book has no table of contents.",
@@ -590,74 +746,5 @@ private fun TocList(entries: List<TocEntry>, onSelect: (TocEntry) -> Unit) {
             )
             HorizontalDivider()
         }
-    }
-}
-
-@Composable
-private fun SettingsPanel(s: ReaderSettings, format: BookFormat, onChange: (ReaderSettings) -> Unit, onMoreOptions: () -> Unit) {
-    Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Reading settings", style = MaterialTheme.typography.titleLarge)
-
-        Text("Theme", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ReadingTheme.entries.forEach { t ->
-                FilterChip(selected = s.theme == t, onClick = { onChange(s.copy(theme = t)) }, label = { Text(t.label) })
-            }
-        }
-
-        if (s.theme == ReadingTheme.DARK && format != BookFormat.TXT) {
-            val isPdf = format == BookFormat.PDF
-            Text(if (isPdf) "Pages in dark mode" else "Pictures in dark mode", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DarkPictures.entries.forEach { mode ->
-                    val selected = if (isPdf) s.darkPdfPages == mode else s.darkImages == mode
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onChange(if (isPdf) s.copy(darkPdfPages = mode) else s.copy(darkImages = mode)) },
-                        label = { Text(mode.label) },
-                    )
-                }
-            }
-        }
-
-        if (format == BookFormat.PDF) {
-            Text(
-                "PDF pages keep their original layout. Text size, spacing and margins apply in text reflow (the \"A\" button).",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Text("Text size", style = MaterialTheme.typography.labelLarge)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = { onChange(s.copy(fontScale = (s.fontScale - 0.1).coerceIn(ReaderSettings.FONT_RANGE))) }) { Text("A−") }
-            Text("${(s.fontScale * 100).toInt()}%", modifier = Modifier.padding(horizontal = 16.dp))
-            OutlinedButton(onClick = { onChange(s.copy(fontScale = (s.fontScale + 0.1).coerceIn(ReaderSettings.FONT_RANGE))) }) { Text("A+") }
-        }
-
-        Text("Line spacing", style = MaterialTheme.typography.labelLarge)
-        ThinSlider(
-            value = s.lineHeight.toFloat(),
-            onValueChange = { onChange(s.copy(lineHeight = it.toDouble())) },
-            valueRange = ReaderSettings.LINE_RANGE.start.toFloat()..ReaderSettings.LINE_RANGE.endInclusive.toFloat(),
-            steps = 9,
-        )
-
-        Text("Margins", style = MaterialTheme.typography.labelLarge)
-        ThinSlider(
-            value = s.pageMargins.toFloat(),
-            onValueChange = { onChange(s.copy(pageMargins = it.toDouble())) },
-            valueRange = ReaderSettings.MARGIN_RANGE.start.toFloat()..ReaderSettings.MARGIN_RANGE.endInclusive.toFloat(),
-            steps = 5,
-        )
-
-        if (format == BookFormat.EPUB) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Scroll instead of turning pages", modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(8.dp))
-                Switch(checked = s.scroll, onCheckedChange = { onChange(s.copy(scroll = it)) }, colors = chromeSwitchColors())
-            }
-        }
-        TextButton(onClick = onMoreOptions) { Text(if (format == BookFormat.PDF) "More PDF options" else "More options") }
     }
 }

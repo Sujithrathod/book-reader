@@ -3,6 +3,8 @@ package com.bookreader.app.reader
 import android.content.Context
 import com.bookreader.app.narration.PdfSource
 import com.bookreader.app.narration.PdfText
+import com.bookreader.app.narration.PdfWord
+import com.bookreader.app.narration.PdfWords
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
@@ -48,6 +50,7 @@ internal class PdfTextPages(private val context: Context, private val file: File
     private var doc: PDDocument? = null // guarded by lock
     private val lines = HashMap<Int, List<String>>()
     private val paragraphs = HashMap<Int, List<String>>()
+    private val words = HashMap<Int, List<PdfWord>>()
     @Volatile private var closed = false
 
     suspend fun paragraphs(page: Int): List<String> = withContext(Dispatchers.IO) {
@@ -64,6 +67,25 @@ internal class PdfTextPages(private val context: Context, private val file: File
                     PdfText.cleanPage(linesOf(page), if (page > 0) linesOf(page - 1) else null)
                 }.getOrDefault(emptyList())
                 paragraphs[page] = result
+                result
+            } finally {
+                if (closed) release()
+            }
+        }
+    }
+
+    /** The page's words with their places on the page, for long-pressing a word on the page picture. */
+    suspend fun words(page: Int): List<PdfWord> = withContext(Dispatchers.IO) {
+        lock.withLock {
+            try {
+                words[page]?.let { return@withLock it }
+                if (closed) return@withLock emptyList()
+                val d = doc ?: run {
+                    PDFBoxResourceLoader.init(context.applicationContext)
+                    PDDocument.load(file)
+                }.also { doc = it }
+                val result = runCatching { PdfWords.of(d, page) }.getOrDefault(emptyList())
+                words[page] = result
                 result
             } finally {
                 if (closed) release()

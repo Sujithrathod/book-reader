@@ -59,6 +59,43 @@
   "Invert" is the new default, so an earlier saved "Dim" goes back to the default once.
 - 38 unit tests pass (adds see-through pictures and matching pictures to the book's files).
 
+### New menus, in-app voice download, long-press on PDF pages (2026-11-12)
+- New look for the reading menu: a floating rounded card at the bottom with the chapter and page,
+  a slim slider, and five labelled tools (Contents, Theme, Listen, Auto scroll, Settings). The top bar
+  matches it. This replaces the flat grey bar with six unlabelled icons.
+- Theme button shows Light, Dark and Sepia as circles inside the card.
+- Settings button opens one Settings page with every option, in four groups: Display, Page turning,
+  Read aloud and PDF pages. It replaces the old settings sheet and the "PDF Options" page.
+- New settings: reading brightness, font (Default, Serif, Sans, Mono), auto scroll speed, and screen
+  rotation as a choice (it used to be a button that cycled).
+- Voices can be downloaded inside the app: a voice that isn't on the phone has a Download button, and it
+  is selected once the download finishes. Checked with Google's voice engine.
+- Fix: tapping a voice didn't move the selection mark until the list was reopened.
+- Voices downloaded outside the app now show up when the list opens or the app comes back to the front.
+- The voice list shows the phone's and the book's languages first, with short names ("Voice 1", "Offline").
+- PDF pages: long-press a word on the page picture to read aloud from it (or get "Read from here" /
+  "Copy word" when "Long-press a word to read at once" is off). The pressed word is highlighted.
+- 49 unit tests pass (adds finding the pressed word, matching it to the read text, voice choice and order).
+
+### Page colours, modern highlight, bookmarks, animated library (2026-11-12)
+- Eight reading themes, each a background and text colour chosen to read well together: White, Sepia,
+  Cream, Green, Grey, Dim, Night blue and Black. They replace Light, Dark and Sepia and apply to EPUB,
+  TXT and PDF text reflow. Every pair is tested for strong contrast.
+- Reading aloud is marked in a softer, rounded style: the sentence gets a light bar and the spoken word
+  a solid pill. PDF pages now show the same marks on the page itself, instead of a frame around the page.
+- Auto scroll: new control with pause/resume, slower/faster, and (in paged views) a line that fills up
+  before the next page turn. Scrolling is now paced by the clock: it was far too fast, and twice as fast
+  on 120 Hz screens. Pages now stay up 6 to 60 seconds depending on speed (it was 1 to 10).
+- Voice download shows how long it has been running and a moving bar. Android's voice engine gives no
+  percentage, so none is shown.
+- Bookmarks: a bookmark button on the top bar, and a Bookmarks tab in the Contents sheet to jump back
+  or remove them (database version 3, with migration).
+- New settings: warm light (orange tint that cuts blue light) and volume buttons to turn pages.
+- Library: "Continue reading" card for the book in progress, EPUB / PDF / TXT filters, covers that
+  press in and slide into place, shimmering placeholders while books import, animated progress bars,
+  and a details sheet on long-press (it used to go straight to "Remove").
+- 53 unit tests pass (adds highlight placement on PDF pages, auto scroll speeds, theme contrast).
+
 ## 0.4.0 (2026-11-02) - Step 4: review and handover
 - Review fixes: reading continues in the chosen voice after previewing another voice.
 - Review fixes: no crash when Android restores the reader after the app was closed in the background.

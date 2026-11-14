@@ -35,7 +35,7 @@ limitations are in `known-limitations.md`.
 | Notification opens the book being read | implemented | 4 |
 | Signed release build for sharing | implemented (keystore.properties, see release-signing.md) | 4 |
 | Sleep timer | implemented | 3 |
-| Read PDFs aloud (text-based) | implemented (play reads from the page; long-press a word in text reflow) | 3, 5 |
+| Read PDFs aloud (text-based) | implemented (play reads from the page; long-press a word on the page or in text reflow) | 3, 5 |
 | Pronunciation replacements | deferred (phase 2) | - |
 | Bookmarks, highlights, notes | deferred (phase 2) | - |
 | Collections, favourites, stats | deferred (phase 2) | - |

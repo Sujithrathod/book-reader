@@ -27,10 +27,20 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     val search = MutableStateFlow("")
     val sort = MutableStateFlow(LibrarySort.RECENT)
     val importing = MutableStateFlow(0)
+    /** Show only this format ("EPUB", "PDF", "TXT"), or every book when null. */
+    val format = MutableStateFlow<String?>(null)
 
     /** null while the database is loading, so the screen doesn't flash "empty". */
     val books: StateFlow<List<BookEntity>?> =
-        combine(dao.observeAll(), search, sort) { all, q, s -> LibraryQuery.apply(all, q, s) }
+        combine(dao.observeAll(), search, sort, format) { all, q, s, f ->
+            LibraryQuery.apply(if (f == null) all else all.filter { it.format == f }, q, s)
+        }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** The unfinished book opened most recently, for the "Continue reading" card. */
+    val continueBook: StateFlow<BookEntity?> =
+        dao.observeAll()
+            .map { all -> all.filter { it.lastOpenedAt != null && it.progress < 0.995 }.maxByOrNull { it.lastOpenedAt ?: 0L } }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val totalBooks: StateFlow<Int> =
@@ -70,6 +80,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun delete(book: BookEntity) {
         viewModelScope.launch {
             app.importer.delete(book)
+            app.database.bookmarks().deleteForBook(book.id)
             _messages.send("Removed \"${book.title}\"")
         }
     }

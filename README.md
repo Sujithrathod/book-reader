@@ -9,11 +9,12 @@ See `CHANGELOG.md`, `docs/test-plan.md` and `docs/known-limitations.md`.
 
 ## Reading screen
 
-Laid out like Moon+ Reader: the page fills the screen with a status line
-(battery, time, chapter, page). Tap the middle for the menu (grey top bar, page
-slider, rotation, day/night, read aloud, auto scroll, contents, settings); tap
-the edges to turn pages. PDFs add page-by-page or continuous layout, margin
-trimming, text reflow and a "PDF Options" page.
+The page fills the screen with a status line (battery, time, chapter, page).
+Tap the middle for the menu: a top bar with the title, and a floating card at
+the bottom with the page slider and five tools (Contents, Theme, Listen, Auto
+scroll, Settings). Tap the edges to turn pages. The Settings button opens one
+page with every option: display, page turning, reading aloud and PDF pages.
+Night mode and page behaviour follow Moon+ Reader; the menus are the app's own.
 
 ## Build the APK
 
@@ -69,8 +70,8 @@ minSdk 26 (Android 8.0), targetSdk 35.
   "Long-press a word to read at once" setting off, long-press shows a menu
   with "Read from here" and "Copy" instead.
 - PDF pages are shown as images, so the play button reads from the top of
-  the page on screen. In text reflow (the "A" button) words can be long-pressed
-  like in TXT books. Scanned PDFs have no text and show a clear message.
+  the page on screen. Words can be long-pressed on the page itself or in text
+  reflow (the "A" button), like in TXT books. Scanned PDFs have no text and show a clear message.
 - The play button continues from where listening last stopped (saved
   separately from the reading position), or from the screen if there is none.
 - Android's TextToSpeech has no pause/resume, so the app speaks one sentence
@@ -86,3 +87,12 @@ minSdk 26 (Android 8.0), targetSdk 35.
 ## License
 
 MIT, see [LICENSE](LICENSE). Uses Readium (BSD-3-Clause) and PdfBox-Android (Apache 2.0).
+
+## Open-source projects this app uses or could use
+
+- In use: [Readium Kotlin Toolkit](https://github.com/readium/kotlin-toolkit) (EPUB) and PdfBox-Android (PDF text).
+- Candidates looked at on 2026-11-12, not added yet:
+  [sherpa-onnx](https://k2-fsa.github.io/sherpa/onnx/) (offline voices the app downloads itself, which
+  would allow a real download percentage; tried on 2026-11-13: version 2.0 can no longer speak Piper
+  voices, so its Supertonic model is the one to use; unfinished work is on the `built-in-voices-wip` branch), Google ML Kit text recognition (reading scanned
+  PDFs aloud), and a pinch-zoom library such as Telephoto (zooming PDF pages).

@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.ActionMode
+import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.WindowManager
@@ -43,6 +44,21 @@ class ReaderActivity : AppCompatActivity() {
 
     private var session: ReaderSession? = null
     private var askedForNotifications = false
+
+    /** Set by the reader screen when the volume buttons should turn pages (+1 next, -1 previous). */
+    private var volumeTurn: ((Int) -> Unit)? = null
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val turn = volumeTurn
+        val direction = when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN -> +1
+            KeyEvent.KEYCODE_VOLUME_UP -> -1
+            else -> 0
+        }
+        if (turn == null || direction == 0) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) turn(direction)
+        return true // also swallow the key-up, so the volume doesn't change
+    }
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* narration works either way */ }
@@ -87,8 +103,8 @@ class ReaderActivity : AppCompatActivity() {
         enableEdgeToEdge()
         lifecycleScope.launch { app.database.books().markOpened(session.book.id, System.currentTimeMillis()) }
         lifecycleScope.launch {
-            app.settings.settings.map { it.orientation to it.keepScreenOn }.distinctUntilChanged().collect { (orientation, keepOn) ->
-                applyScreenSettings(orientation, keepOn)
+            app.settings.settings.map { Triple(it.orientation, it.keepScreenOn, it.brightness) }.distinctUntilChanged().collect { (orientation, keepOn, brightness) ->
+                applyScreenSettings(orientation, keepOn, brightness)
             }
         }
 
@@ -102,12 +118,16 @@ class ReaderActivity : AppCompatActivity() {
                     lifecycleScope.launch { app.database.books().savePosition(session.book.id, location, progress) }
                 },
                 onStartNarration = { source -> startNarration(session, source) },
+                onVolumeKeys = { volumeTurn = it },
                 onBack = { finish() },
             )
         }
     }
 
-    private fun applyScreenSettings(orientation: ScreenOrientation, keepScreenOn: Boolean) {
+    private fun applyScreenSettings(orientation: ScreenOrientation, keepScreenOn: Boolean, brightness: Float?) {
+        window.attributes = window.attributes.apply {
+            screenBrightness = brightness?.coerceIn(ReaderSettings.BRIGHTNESS_RANGE) ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
         val wanted = when (orientation) {
             ScreenOrientation.AUTO -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             ScreenOrientation.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -208,11 +228,11 @@ class ReaderActivity : AppCompatActivity() {
 
 internal fun ReaderSettings.toEpubPreferences() =
     org.readium.r2.navigator.epub.EpubPreferences(
-        theme = when (theme) {
-            ReadingTheme.LIGHT -> org.readium.r2.navigator.preferences.Theme.LIGHT
-            ReadingTheme.DARK -> org.readium.r2.navigator.preferences.Theme.DARK
-            ReadingTheme.SEPIA -> org.readium.r2.navigator.preferences.Theme.SEPIA
-        },
+        // Readium's own light or dark theme as the base (dark turns on the picture filter),
+        // with the reading theme's colours on top.
+        theme = if (theme.dark) org.readium.r2.navigator.preferences.Theme.DARK else org.readium.r2.navigator.preferences.Theme.LIGHT,
+        backgroundColor = org.readium.r2.navigator.preferences.Color(theme.background.toInt()),
+        textColor = org.readium.r2.navigator.preferences.Color(theme.text.toInt()),
         fontSize = fontScale,
         lineHeight = lineHeight,
         pageMargins = pageMargins,
@@ -222,6 +242,12 @@ internal fun ReaderSettings.toEpubPreferences() =
             DarkPictures.DIM -> org.readium.r2.navigator.preferences.ImageFilter.DARKEN
             DarkPictures.INVERT -> org.readium.r2.navigator.preferences.ImageFilter.INVERT
             DarkPictures.ORIGINAL -> null
+        },
+        fontFamily = when (font) {
+            com.bookreader.app.data.ReadingFont.ORIGINAL -> null
+            com.bookreader.app.data.ReadingFont.SERIF -> org.readium.r2.navigator.preferences.FontFamily.SERIF
+            com.bookreader.app.data.ReadingFont.SANS -> org.readium.r2.navigator.preferences.FontFamily.SANS_SERIF
+            com.bookreader.app.data.ReadingFont.MONO -> org.readium.r2.navigator.preferences.FontFamily.MONOSPACE
         },
         // Publisher styles must be off for line height to apply.
         publisherStyles = false,

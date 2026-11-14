@@ -8,6 +8,11 @@ one scanned PDF, one TXT (a Project Gutenberg book is ideal), one DRM EPUB if av
 
 ## Install and library
 - [ ] APK installs; app opens with an empty library and an Import button.
+- [ ] While books import, shimmering placeholder covers show; the books then slide into the grid.
+- [ ] After opening a book, the library shows a "Continue reading" card for it; tapping it reopens the book.
+- [ ] EPUB / PDF / TXT filter chips narrow the grid; "All" shows everything again.
+- [ ] Press a cover: it shrinks slightly. Long-press: a details sheet with Continue/Read and Remove.
+- [ ] Scroll the grid: the Import button shrinks to a round button; back at the top it grows again.
 - [ ] Import several books at once (EPUB, PDF, TXT): covers, titles, authors appear.
 - [ ] Search by title and author; each sort option works.
 - [ ] Long-press a book > Remove: it disappears and stays gone after restart.
@@ -20,22 +25,34 @@ one scanned PDF, one TXT (a Project Gutenberg book is ideal), one DRM EPUB if av
 - [ ] Close and reopen each book: it reopens at the same place.
 - [ ] Rotate the phone while reading: position kept, no crash.
 
-## Reader layout (Moon+ Reader style)
+## Reader layout
 - [ ] Book opens full screen; status line shows battery, time, chapter and page; navigation bar hidden.
-- [ ] Tap the middle: grey top bar and bottom panel appear. Tap again or press Back: they hide.
+- [ ] Tap the middle: top bar and the floating bottom card appear. Tap the page or press Back: they hide.
 - [ ] Tap the right side: next page (PDF: the next page starts at the top). Left side: previous page.
 - [ ] Tap the top or bottom of the middle: the menu opens (no scrolling).
 - [ ] Page slider and its arrows jump to the right page; the number next to it updates while dragging.
-- [ ] Day/night pop-up: Day Theme, Night Theme, Load from theme each apply at once.
-- [ ] Day: blue top bar, light grey bottom panel, grey margins. Night: dark grey bars, black margins.
+- [ ] Theme button: eight colour circles appear in the card (swipe sideways); each applies at once.
+- [ ] Bookmark button on the top bar: adds a bookmark; Contents > Bookmarks lists it, opens it and removes it.
+- [ ] Settings > Display > Warm light: the page turns warmer as the slider moves; Off removes the tint.
+- [ ] Settings > Page turning > Volume buttons turn pages: volume down = next, up = previous; volume unchanged.
+- [ ] Reading aloud: the sentence has a soft rounded bar and the spoken word a solid pill (TXT, PDF reflow).
+- [ ] Reading aloud on a PDF page: the sentence and spoken word are marked on the page and move along.
+- [ ] Day: white bars with dark icons. Night: near-black bars with light icons. Listen button is blue in both.
 - [ ] Night PDF with colour charts: colours are inverted (blue lines show yellow, white paper black).
 - [ ] Night PDF with a figure on a dark background: the figure stays dark with its own colours, no white edge around it.
-- [ ] Rotation button cycles Auto-rotate / Portrait / Landscape.
-- [ ] Auto scroll: starts, speed −/+ works, tapping the page or ✕ stops it.
+- [ ] Settings button opens the Settings page; Back returns to the book.
+- [ ] Settings > Display: brightness (turn off "Use phone brightness"), text size, font, line spacing, margins.
+- [ ] Settings > Page turning: screen rotation Auto / Portrait / Landscape, auto scroll speed, keep screen on.
+- [ ] Auto scroll: starts at a readable pace; pause and resume work; − / + change the speed; ✕ or a tap stops it.
+- [ ] Auto scroll in a paged view: the line in the control fills up, then the page turns.
 - [ ] PDF with bookmarks: contents list shows chapters; status line shows the chapter.
 - [ ] PDF round buttons: page by page / continuous, and trim margins.
 - [ ] PDF "A" button: text reflow; long-press a word reads from it; "A" again shows pages at the same page.
-- [ ] PDF Options: margin colour, render quality, page gap, thumbnails, page flip animation, Control Options, Miscellaneous.
+- [ ] PDF page (not reflow): long-press a word. It is highlighted and reading starts at that word.
+- [ ] PDF page with trimmed margins and in page-by-page layout: long-press still picks the right word.
+- [ ] Settings > PDF pages: trim margins, sharpness, page gap, colour around pages, reflow button, thumbnails.
+- [ ] Voice list: tap Download on a voice. It shows "Downloading" with a timer, then becomes selected without leaving the app.
+- [ ] Voice list: tap another downloaded voice. The mark moves at once and the next sentence uses it.
 
 ## Reading aloud: starting point
 - [ ] TXT: long-press a word mid-sentence. Reading starts at **that word**, not the sentence start.

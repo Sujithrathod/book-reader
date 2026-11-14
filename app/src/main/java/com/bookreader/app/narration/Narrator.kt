@@ -73,12 +73,17 @@ class Narrator(private val context: Context) {
     private val _voices = MutableStateFlow<List<VoiceInfo>>(emptyList())
     val voices: StateFlow<List<VoiceInfo>> = _voices.asStateFlow()
 
+    /** Voices whose data is being downloaded by the voice engine: name to the time it started. */
+    private val _downloading = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val downloading: StateFlow<Map<String, Long>> = _downloading.asStateFlow()
+
     /** Called with (bookId, encoded position) each time a new sentence starts. */
     var onListeningPosition: ((Long, String) -> Unit)? = null
 
     private var tts: TextToSpeech? = null
     private var settings = VoiceSettings()
-    private var bookLanguage: String? = null
+    var bookLanguage: String? = null
+        private set
 
     // Reading position
     private var source: NarrationSource? = null
@@ -148,10 +153,36 @@ class Narrator(private val context: Context) {
     }
 
     /** The voice that will actually be used: the chosen one if installed, else a sensible default. */
-    fun effectiveVoice(): VoiceInfo? {
-        val all = _voices.value
-        return all.firstOrNull { it.name == settings.voiceName && it.usable }
-            ?: VoiceChoice.pickDefault(all, bookLanguage, Locale.getDefault())
+    fun effectiveVoice(): VoiceInfo? =
+        VoiceChoice.effective(_voices.value, settings.voiceName, bookLanguage, Locale.getDefault())
+
+    /**
+     * Asks the voice engine to download [voiceName]. Android has no download call of its own:
+     * selecting a voice that isn't installed is what makes the engine fetch it. The list is
+     * then checked until the voice is ready. [onDone] gets true once it can be used.
+     */
+    fun downloadVoice(voiceName: String, onDone: (Boolean) -> Unit) {
+        val engine = tts ?: return onDone(false)
+        if (voiceName in _downloading.value) return
+        val voice = runCatching { engine.voices?.firstOrNull { it.name == voiceName } }.getOrNull() ?: return onDone(false)
+        _downloading.value += voiceName to System.currentTimeMillis()
+        scope.launch {
+            var ready = false
+            val deadline = System.currentTimeMillis() + DOWNLOAD_TIMEOUT_MS
+            while (System.currentTimeMillis() < deadline) {
+                // Asked again on each check: some engines only start once the voice is used.
+                if (_state.value.playState != PlayState.PLAYING) {
+                    runCatching { engine.voice = voice }
+                    voiceChangedByPreview = true
+                }
+                delay(DOWNLOAD_CHECK_MS)
+                refreshVoices()
+                if (_voices.value.firstOrNull { it.name == voiceName }?.usable == true) { ready = true; break }
+            }
+            _downloading.value -= voiceName
+            if (_state.value.playState != PlayState.PLAYING) applyVoice()
+            onDone(ready)
+        }
     }
 
     private fun applyVoice() {
@@ -175,7 +206,7 @@ class Narrator(private val context: Context) {
         voiceChangedByPreview = true
         engine.setSpeechRate(settings.rate)
         engine.setPitch(settings.pitch)
-        engine.speak("This is how this voice sounds when it reads your book.", TextToSpeech.QUEUE_FLUSH, Bundle(), PREVIEW_ID)
+        engine.speak(PREVIEW_TEXT, TextToSpeech.QUEUE_FLUSH, Bundle(), PREVIEW_ID)
     }
 
     // ---------- Commands ----------
@@ -454,6 +485,9 @@ class Narrator(private val context: Context) {
 
     companion object {
         private const val PREVIEW_ID = "preview"
+        private const val PREVIEW_TEXT = "This is how this voice sounds when it reads your book."
+        private const val DOWNLOAD_TIMEOUT_MS = 10 * 60_000L
+        private const val DOWNLOAD_CHECK_MS = 2_500L
 
         /** Opens the screen where people download more voices. */
         fun installVoicesIntent(): Intent =

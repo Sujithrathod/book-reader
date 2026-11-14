@@ -37,3 +37,9 @@ fun chapterAt(entries: List<OutlineEntry>, page: Int): String? {
     for (e in entries) if (e.page <= page && (best == null || e.page >= best.page)) best = e
     return best?.title
 }
+
+/** Auto scroll in a continuous view: how fast the text glides, for speed 1 (slow) to 10 (fast). */
+fun autoScrollDpPerSecond(speed: Int): Float = 4f + speed.coerceIn(1, 10) * 5f
+
+/** Auto scroll in a paged view: seconds a page stays up before it turns, for speed 1 to 10. */
+fun autoTurnSeconds(speed: Int): Int = 66 - speed.coerceIn(1, 10) * 6

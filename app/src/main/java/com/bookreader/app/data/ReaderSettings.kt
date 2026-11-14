@@ -11,7 +11,20 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-enum class ReadingTheme(val label: String) { LIGHT("Light"), DARK("Dark"), SEPIA("Sepia") }
+/**
+ * Page colours for reading: a background and a text colour that go well together.
+ * [dark] themes use the night look for pictures and PDF pages, and dark menus.
+ */
+enum class ReadingTheme(val label: String, val background: Long, val text: Long, val dark: Boolean) {
+    LIGHT("White", 0xFFFFFFFF, 0xFF1A1A1A, false),
+    SEPIA("Sepia", 0xFFFAF4E8, 0xFF3A2E20, false),
+    CREAM("Cream", 0xFFFFF3D6, 0xFF33291A, false),
+    MINT("Green", 0xFFD9EBD3, 0xFF1F3324, false),
+    GREY("Grey", 0xFFE3E4E6, 0xFF26282B, false),
+    SLATE("Dim", 0xFF2A2C31, 0xFFD8DADF, true),
+    NAVY("Night blue", 0xFF101B2E, 0xFFC7D3E6, true),
+    DARK("Black", 0xFF000000, 0xFFF2F2F2, true),
+}
 
 /** How pictures (EPUB images, whole PDF pages) are shown with the dark theme. */
 enum class DarkPictures(val label: String) { DIM("Dim"), INVERT("Invert"), ORIGINAL("Original") }
@@ -23,6 +36,9 @@ enum class RenderQuality(val label: String, val scale: Float) { LOW("Low", 0.75f
 enum class PageFlip(val label: String) { NONE("None"), SLIDE("Slide") }
 
 enum class ScreenOrientation(val label: String) { AUTO("Auto-rotate"), PORTRAIT("Portrait"), LANDSCAPE("Landscape") }
+
+/** Typeface for the book's text. ORIGINAL keeps the book's own (EPUB) or the phone's default. */
+enum class ReadingFont(val label: String) { ORIGINAL("Default"), SERIF("Serif"), SANS("Sans"), MONO("Mono") }
 
 /** Reading look, shared by every book. Ranges are kept inside what Readium accepts. */
 data class ReaderSettings(
@@ -59,6 +75,13 @@ data class ReaderSettings(
     /** The line under the page with battery, time, chapter and page number. */
     val statusLine: Boolean = true,
     val autoScrollSpeed: Int = 3,     // 1 .. 10
+    val font: ReadingFont = ReadingFont.ORIGINAL,
+    /** Screen brightness while reading, 0.02 .. 1; null follows the phone's own brightness. */
+    val brightness: Float? = null,
+    /** Warm (orange) tint over the page to cut blue light, 0 = off .. 1 = strongest. */
+    val warmth: Float = 0f,
+    /** The phone's volume buttons turn pages (not while a book is being read aloud). */
+    val volumeKeysTurn: Boolean = false,
 ) {
     companion object {
         val FONT_RANGE = 0.75..2.5
@@ -66,6 +89,7 @@ data class ReaderSettings(
         val MARGIN_RANGE = 0.5..2.0
         val PAGE_GAP_RANGE = 0..32
         val AUTO_SCROLL_RANGE = 1..10
+        val BRIGHTNESS_RANGE = 0.02f..1f
         const val DEFAULT_MARGIN_COLOR = 0xFFC0C0C0.toInt()
     }
 }
@@ -102,6 +126,10 @@ class SettingsRepository(private val context: Context) {
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val statusLine = booleanPreferencesKey("status_line")
         val autoScrollSpeed = intPreferencesKey("auto_scroll_speed")
+        val font = stringPreferencesKey("font")
+        val brightness = floatPreferencesKey("brightness")
+        val warmth = floatPreferencesKey("warmth")
+        val volumeKeysTurn = booleanPreferencesKey("volume_keys_turn")
     }
 
     val settings: Flow<ReaderSettings> = context.settingsStore.data.map { p ->
@@ -132,6 +160,10 @@ class SettingsRepository(private val context: Context) {
             keepScreenOn = p[Keys.keepScreenOn] ?: true,
             statusLine = p[Keys.statusLine] ?: true,
             autoScrollSpeed = p[Keys.autoScrollSpeed] ?: 3,
+            font = enumOr(p[Keys.font], ReadingFont.ORIGINAL),
+            brightness = p[Keys.brightness],
+            warmth = p[Keys.warmth] ?: 0f,
+            volumeKeysTurn = p[Keys.volumeKeysTurn] ?: false,
         )
     }
 
@@ -161,6 +193,10 @@ class SettingsRepository(private val context: Context) {
             p[Keys.keepScreenOn] = s.keepScreenOn
             p[Keys.statusLine] = s.statusLine
             p[Keys.autoScrollSpeed] = s.autoScrollSpeed.coerceIn(ReaderSettings.AUTO_SCROLL_RANGE)
+            p[Keys.font] = s.font.name
+            s.brightness?.let { p[Keys.brightness] = it.coerceIn(ReaderSettings.BRIGHTNESS_RANGE) } ?: p.remove(Keys.brightness)
+            p[Keys.warmth] = s.warmth.coerceIn(0f, 1f)
+            p[Keys.volumeKeysTurn] = s.volumeKeysTurn
         }
     }
 }

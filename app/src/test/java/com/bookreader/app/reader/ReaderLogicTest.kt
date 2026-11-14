@@ -42,4 +42,32 @@ class ReaderLogicTest {
         assertEquals("Chapter 2", chapterAt(outline, 50))
         assertNull(chapterAt(outline.drop(1), 1))
     }
+
+    @Test fun autoScrollGetsFasterWithSpeed() {
+        // Slowest is a relaxed reading pace; fastest is still followable.
+        assertEquals(9f, autoScrollDpPerSecond(1), 0.001f)
+        assertEquals(54f, autoScrollDpPerSecond(10), 0.001f)
+        assertEquals(60, autoTurnSeconds(1))
+        assertEquals(6, autoTurnSeconds(10))
+        for (s in 1 until 10) {
+            assert(autoScrollDpPerSecond(s + 1) > autoScrollDpPerSecond(s))
+            assert(autoTurnSeconds(s + 1) < autoTurnSeconds(s))
+        }
+        // Out-of-range speeds are held to the ends.
+        assertEquals(autoTurnSeconds(10), autoTurnSeconds(99))
+        assertEquals(autoScrollDpPerSecond(1), autoScrollDpPerSecond(0), 0.001f)
+    }
+
+    @Test fun everyReadingThemeHasReadableText() {
+        fun luminance(argb: Long): Double {
+            fun ch(v: Long): Double { val c = v / 255.0; return if (c <= 0.03928) c / 12.92 else Math.pow((c + 0.055) / 1.055, 2.4) }
+            return 0.2126 * ch((argb shr 16) and 0xFF) + 0.7152 * ch((argb shr 8) and 0xFF) + 0.0722 * ch(argb and 0xFF)
+        }
+        for (t in com.bookreader.app.data.ReadingTheme.entries) {
+            val a = luminance(t.background); val b = luminance(t.text)
+            val contrast = (maxOf(a, b) + 0.05) / (minOf(a, b) + 0.05)
+            assert(contrast >= 7.0) { "${t.label}: contrast $contrast" }
+            assertEquals(t.label, a < b, t.dark)
+        }
+    }
 }

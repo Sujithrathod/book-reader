@@ -76,6 +76,16 @@ import com.bookreader.app.data.ReaderSettings
 import com.bookreader.app.data.ReadingTheme
 import com.bookreader.app.narration.BlockPosition
 import com.bookreader.app.narration.NarrationState
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.DpOffset
+import com.bookreader.app.data.ReadingFont
+import com.bookreader.app.narration.PdfText
+import com.bookreader.app.narration.PdfWord
+import com.bookreader.app.narration.PdfWords
 import com.bookreader.app.narration.PdfSource
 import com.bookreader.app.narration.Segment
 import com.bookreader.app.narration.TxtSource
@@ -157,9 +167,15 @@ private fun listNav(
         }
     },
     autoScroll = { speed ->
+        // Paced by the clock, so the speed is the same on 60 Hz and 120 Hz screens.
+        var last = 0L
         while (state.canScrollForward) {
-            withFrameNanos { }
-            state.scrollBy(speed() * 0.4f * density)
+            val now = withFrameNanos { it }
+            if (last != 0L) {
+                val seconds = ((now - last) / 1e9f).coerceAtMost(0.1f)
+                state.scrollBy(autoScrollDpPerSecond(speed()) * density * seconds)
+            }
+            last = now
         }
     },
     thumbnail = thumbnail,
@@ -237,6 +253,9 @@ private class PdfDocument(file: File) : AutoCloseable {
         bitmap
     }
 
+    /** The part of page [index] that [render] shows (fractions of the page); the whole page unless cropped. */
+    fun boxOf(index: Int, crop: Boolean): RectF = if (crop) contentBoxes[index] ?: FULL_PAGE else FULL_PAGE
+
     /** Finds the inked part of a page from a small render, with a little padding around it. */
     private fun contentBox(page: PdfRenderer.Page): RectF {
         val w = 240
@@ -297,7 +316,7 @@ private fun pdfDarkFilter(mode: DarkPictures): ColorFilter? = when (mode) {
 
 /** How PDF pages and the space around them look with the current theme. */
 private class PdfLook(settings: ReaderSettings) {
-    private val dark = settings.theme == ReadingTheme.DARK
+    private val dark = settings.theme.dark
     val filter = if (dark) pdfDarkFilter(settings.darkPdfPages) else null
     /** Night page: inverted, with dark pictures kept dark. */
     val night = dark && settings.darkPdfPages == DarkPictures.INVERT
@@ -353,12 +372,76 @@ internal fun PdfReader(session: ReaderSession, settings: ReaderSettings, narrati
     val tap = rememberTapArea(host, settings.tapEdgesTurn)
     val thumbnail: suspend (Int, Int) -> Bitmap? = { page, w -> pdf.render(page, w, crop = false) }
 
+    // Long-press on a word of the page picture: the word is found from the PDF's text positions.
+    val textPages = remember(file) { PdfTextPages(context, file) }
+    DisposableEffect(textPages) { onDispose { textPages.close() } }
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    var marked by remember { mutableStateOf<Pair<Int, PdfWord>?>(null) }
+    // The words being read aloud, to highlight them on the page picture.
+    val reading = narration.block?.position as? BlockPosition.Pdf
+    val placed by produceState<Pair<Int, List<Pair<PdfWord, Pair<Int, Int>>>>?>(null, reading?.page) {
+        val page = reading?.page
+        value = if (page == null) null else {
+            val words = textPages.words(page)
+            val paragraphs = textPages.paragraphs(page)
+            val at = withContext(Dispatchers.Default) { PdfText.locateAll(paragraphs, words.map { it.text }) }
+            page to words.zip(at).mapNotNull { (w, a) -> a?.let { w to it } }
+        }
+    }
+    fun wordsIn(segment: Segment?): List<PdfWord> {
+        val p = placed
+        if (segment == null || reading == null || p == null || p.first != reading.page) return emptyList()
+        return p.second.filter { (_, at) -> at.first == reading.paragraph && at.second >= segment.start && at.second < segment.end }.map { it.first }
+    }
+    val sentenceBars = remember(placed, reading, narration.sentence) { PdfWords.lines(wordsIn(narration.sentence)) }
+    val wordBars = remember(placed, reading, narration.word) { wordsIn(narration.word) }
+    val press = PdfPress(tap, settings.longPressReads, marked, readingPage, sentenceBars, wordBars) { page, x, y, read ->
+        scope.launch {
+            val words = textPages.words(page)
+            val i = PdfWords.hit(words, x, y)
+            if (i == null) {
+                host.notify(
+                    if (words.isEmpty()) "This page has no text to read aloud. It may be a scanned page."
+                    else "Long-press on a word to read aloud from it."
+                )
+                return@launch
+            }
+            val word = words[i]
+            marked = page to word
+            if (read) {
+                val at = PdfText.locateWord(textPages.paragraphs(page), words.map { it.text }, i)
+                if (at == null) host.notify("That word is in the page header or footer, which isn't read aloud.")
+                else host.startNarration(PdfSource(context, file, page, at.first, at.second))
+            } else {
+                clipboard.setText(AnnotatedString(word.text))
+                host.notify("Copied \"${word.text}\"")
+            }
+            delay(1200)
+            if (marked?.second === word) marked = null
+        }
+    }
+
     when {
-        session.pdfReflow -> PdfReflowView(file, count, start, settings, narration, host, tap, publish, save)
-        settings.pdfPaged -> PdfPagedView(pdf, start, settings, readingPage, host, tap, publish, save, thumbnail)
-        else -> PdfScrollView(pdf, start, settings, readingPage, host, tap, publish, save, thumbnail)
+        session.pdfReflow -> PdfReflowView(file, textPages, count, start, settings, narration, host, tap, publish, save)
+        settings.pdfPaged -> PdfPagedView(pdf, start, settings, readingPage, host, tap, publish, save, thumbnail, press)
+        else -> PdfScrollView(pdf, start, settings, readingPage, host, tap, publish, save, thumbnail, press)
     }
 }
+
+/** What a page picture needs to handle taps and long-presses on its words. */
+private class PdfPress(
+    val tap: TapArea,
+    val longPressReads: Boolean,
+    /** The word just long-pressed (page, word), shown highlighted for a moment. */
+    val marked: Pair<Int, PdfWord>?,
+    /** The page being read aloud, with the sentence (one box per line) and the word being spoken. */
+    val readingPage: Int?,
+    val sentence: List<PdfWord>,
+    val word: List<PdfWord>,
+    /** Long-press at (x, y) as fractions of the whole page; read aloud from there, or copy the word. */
+    val onWord: (page: Int, x: Float, y: Float, read: Boolean) -> Unit,
+)
 
 @Composable
 private fun PdfScrollView(
@@ -371,6 +454,7 @@ private fun PdfScrollView(
     publish: (Int) -> Unit,
     save: (Int) -> Unit,
     thumbnail: suspend (Int, Int) -> Bitmap?,
+    press: PdfPress,
 ) {
     val state = rememberLazyListState(initialFirstVisibleItemIndex = start)
     val scope = rememberCoroutineScope()
@@ -386,7 +470,7 @@ private fun PdfScrollView(
         val widthPx = (with(LocalDensity.current) { maxWidth.roundToPx() } * settings.pdfQuality.scale).toInt()
         LazyColumn(state = state, verticalArrangement = Arrangement.spacedBy(settings.pdfPageGap.dp), modifier = Modifier.fillMaxSize()) {
             itemsIndexed(pdf.aspectRatios) { index, ratio ->
-                PdfPageImage(pdf, index, widthPx, settings.pdfCropMargins, ratio, look, index == readingPage, Modifier.fillMaxWidth())
+                PdfPageImage(pdf, index, widthPx, settings.pdfCropMargins, ratio, look, press, Modifier.fillMaxWidth())
             }
         }
     }
@@ -404,6 +488,7 @@ private fun PdfPagedView(
     publish: (Int) -> Unit,
     save: (Int) -> Unit,
     thumbnail: suspend (Int, Int) -> Bitmap?,
+    press: PdfPress,
 ) {
     val count = pdf.pageCount
     val pager = rememberPagerState(initialPage = start) { count }
@@ -419,9 +504,8 @@ private fun PdfPagedView(
                 }
             },
             autoScroll = { speed ->
-                while (pager.currentPage < count - 1) {
-                    delay((11 - speed()) * 1_000L)
-                    pager.animateScrollToPage(pager.currentPage + 1)
+                autoTurnPages(host, speed) {
+                    if (pager.currentPage < count - 1) { pager.animateScrollToPage(pager.currentPage + 1); true } else false
                 }
             },
             thumbnail = thumbnail,
@@ -438,7 +522,7 @@ private fun PdfPagedView(
             val ratio = pdf.aspectRatios[index]
             val fitWidth = minOf(maxW.toFloat(), maxH * ratio)
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                PdfPageImage(pdf, index, (fitWidth * settings.pdfQuality.scale).toInt(), settings.pdfCropMargins, ratio, look, index == readingPage, Modifier)
+                PdfPageImage(pdf, index, (fitWidth * settings.pdfQuality.scale).toInt(), settings.pdfCropMargins, ratio, look, press, Modifier)
             }
         }
     }
@@ -452,21 +536,73 @@ private fun PdfPageImage(
     crop: Boolean,
     pageRatio: Float,
     look: PdfLook,
-    outlined: Boolean,
+    press: PdfPress,
     modifier: Modifier,
 ) {
     val bitmap by produceState<Bitmap?>(null, index, widthPx, crop, look.night) { value = pdf.render(index, widthPx, crop, look.night) }
     val b = bitmap
     val ratio = b?.let { it.width.toFloat() / it.height } ?: pageRatio
+    // The part of the page this picture shows, to turn a finger position into a place on the page.
+    val shown by rememberUpdatedState(if (b != null) pdf.boxOf(index, crop) else FULL_PAGE)
+    val p by rememberUpdatedState(press)
+    var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var menuAt by remember { mutableStateOf<Offset?>(null) }
+    val mark = press.marked?.takeIf { it.first == index }?.second
+    val markColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+    val reading = index == press.readingPage
+    val sentence = if (reading) press.sentence else emptyList()
+    val spoken = if (reading) press.word else emptyList()
+    val sentenceColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.26f)
+    val spokenColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)
+    val density = LocalDensity.current
+
+    fun send(pos: Offset, read: Boolean) {
+        val size = coords?.size ?: return
+        if (size.width == 0 || size.height == 0) return
+        p.onWord(index, shown.left + pos.x / size.width * shown.width(), shown.top + pos.y / size.height * shown.height(), read)
+    }
+
     Box(
         modifier
             .aspectRatio(ratio)
             .background(look.pageBackground)
-            .then(if (outlined) Modifier.border(3.dp, MaterialTheme.colorScheme.secondary) else Modifier),
+            .onGloballyPositioned { coords = it }
+            .pointerInput(index) {
+                detectTapGestures(
+                    onTap = { pos -> coords?.takeIf { it.isAttached }?.let { p.tap.tapInWindow(it.localToWindow(pos)) } },
+                    onLongPress = { pos -> if (p.longPressReads) send(pos, true) else menuAt = pos },
+                )
+            }
+            .drawWithContent {
+                drawContent()
+                if (shown.width() > 0f && shown.height() > 0f) {
+                    // A soft rounded bar over a word or line, in the page picture's coordinates.
+                    fun bar(w: PdfWord, color: Color) {
+                        val pad = 2.5.dp.toPx()
+                        val l = (w.left - shown.left) / shown.width() * size.width - pad
+                        val t = (w.top - shown.top) / shown.height() * size.height - pad
+                        val r = (w.right - shown.left) / shown.width() * size.width + pad
+                        val bt = (w.bottom - shown.top) / shown.height() * size.height + pad
+                        drawRoundRect(color, Offset(l, t), Size(r - l, bt - t), CornerRadius(4.dp.toPx()))
+                    }
+                    sentence.forEach { bar(it, sentenceColor) }
+                    spoken.forEach { bar(it, spokenColor) }
+                    mark?.let { bar(it, markColor) }
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         if (b == null) CircularProgressIndicator(Modifier.size(32.dp))
         else Image(b.asImageBitmap(), "Page ${index + 1}", Modifier.fillMaxSize(), contentScale = ContentScale.Fit, colorFilter = look.filter)
+        val at = menuAt
+        DropdownMenu(
+            expanded = at != null,
+            onDismissRequest = { menuAt = null },
+            offset = if (at == null) DpOffset.Zero else with(density) { DpOffset(at.x.toDp(), (at.y - (coords?.size?.height ?: 0)).toDp()) },
+        ) {
+            DropdownMenuItem(text = { Text("Read from here") }, onClick = { at?.let { send(it, true) }; menuAt = null })
+            DropdownMenuItem(text = { Text("Copy word") }, onClick = { at?.let { send(it, false) }; menuAt = null })
+        }
     }
 }
 
@@ -477,6 +613,7 @@ private fun PdfPageImage(
 @Composable
 private fun PdfReflowView(
     file: File,
+    pages: PdfTextPages,
     count: Int,
     start: Int,
     settings: ReaderSettings,
@@ -487,8 +624,6 @@ private fun PdfReflowView(
     save: (Int) -> Unit,
 ) {
     val context = LocalContext.current
-    val pages = remember(file) { PdfTextPages(context, file) }
-    DisposableEffect(pages) { onDispose { pages.close() } }
     val state = rememberLazyListState(initialFirstVisibleItemIndex = start)
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current.density
@@ -533,6 +668,7 @@ private fun PdfReflowView(
                             color = colors.text,
                             fontSize = (18 * settings.fontScale).toFloat(),
                             lineHeight = settings.lineHeight.toFloat(),
+                            fontFamily = settings.font.family(),
                             sentence = if (here) narration.sentence else null,
                             word = if (here) narration.word else null,
                             accent = accent,
@@ -608,6 +744,7 @@ internal fun TxtReader(session: ReaderSession, settings: ReaderSettings, narrati
                 color = colors.text,
                 fontSize = fontSize.value,
                 lineHeight = settings.lineHeight.toFloat(),
+                fontFamily = settings.font.family(),
                 sentence = if (index == readingPara) narration.sentence else null,
                 word = if (index == readingPara) narration.word else null,
                 accent = accent,
@@ -630,6 +767,7 @@ private fun TxtParagraph(
     color: Color,
     fontSize: Float,
     lineHeight: Float,
+    fontFamily: FontFamily?,
     sentence: Segment?,
     word: Segment?,
     accent: Color,
@@ -645,18 +783,18 @@ private fun TxtParagraph(
     val tap by rememberUpdatedState(onTap)
     val clipboard = LocalClipboardManager.current
 
-    val annotated = remember(text, sentence, word, accent) {
+    // The spoken word sits on a solid rounded pill, so its text turns dark to stay readable.
+    val annotated = remember(text, word) {
         buildAnnotatedString {
             append(text)
-            fun mark(seg: Segment, alpha: Float) {
+            word?.let { seg ->
                 val s = seg.start.coerceIn(0, text.length)
                 val e = seg.end.coerceIn(s, text.length)
-                if (s < e) addStyle(SpanStyle(background = accent.copy(alpha = alpha)), s, e)
+                if (s < e) addStyle(SpanStyle(color = Color(0xFF1D2433)), s, e)
             }
-            sentence?.let { mark(it, 0.22f) }
-            word?.let { mark(it, 0.55f) }
         }
     }
+    val sentenceColor = accent.copy(alpha = 0.22f)
 
     Box {
         Text(
@@ -664,8 +802,37 @@ private fun TxtParagraph(
             color = color,
             fontSize = fontSize.sp,
             lineHeight = lineHeight.em,
+            fontFamily = fontFamily,
             onTextLayout = { layout = it },
             modifier = Modifier
+                .drawBehind {
+                    val l = layout ?: return@drawBehind
+                    val length = l.layoutInput.text.length
+                    // Rounded bars behind a range of the text, one per line it covers.
+                    fun bars(seg: Segment, barColor: Color) {
+                        val s = seg.start.coerceIn(0, length)
+                        val e = seg.end.coerceIn(s, length)
+                        if (s >= e) return
+                        val first = l.getLineForOffset(s)
+                        val last = l.getLineForOffset(e - 1)
+                        val padX = 3.dp.toPx()
+                        for (line in first..last) {
+                            val left = if (line == first) l.getHorizontalPosition(s, true) else l.getLineLeft(line)
+                            val right = if (line == last && l.getLineForOffset(e) == last) l.getHorizontalPosition(e, true) else l.getLineRight(line)
+                            val top = l.getLineTop(line)
+                            val bottom = l.getLineBottom(line)
+                            val inset = ((bottom - top) - fontSize.sp.toPx() * 1.4f).coerceAtLeast(0f) / 2
+                            drawRoundRect(
+                                barColor,
+                                Offset(minOf(left, right) - padX, top + inset),
+                                Size(kotlin.math.abs(right - left) + 2 * padX, bottom - top - 2 * inset),
+                                CornerRadius(6.dp.toPx()),
+                            )
+                        }
+                    }
+                    sentence?.let { bars(it, sentenceColor) }
+                    word?.let { bars(it, accent) }
+                }
                 .onGloballyPositioned { coords = it }
                 .pointerInput(text) {
                     detectTapGestures(
@@ -683,4 +850,12 @@ private fun TxtParagraph(
             DropdownMenuItem(text = { Text("Copy paragraph") }, onClick = { clipboard.setText(AnnotatedString(text)); menuAt = null })
         }
     }
+}
+
+/** The typeface for text the app lays out itself (TXT books and PDF text reflow). */
+internal fun ReadingFont.family(): FontFamily? = when (this) {
+    ReadingFont.ORIGINAL -> null
+    ReadingFont.SERIF -> FontFamily.Serif
+    ReadingFont.SANS -> FontFamily.SansSerif
+    ReadingFont.MONO -> FontFamily.Monospace
 }
